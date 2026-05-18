@@ -188,6 +188,48 @@ impl FsstMatcher {
         Ok(Some(Self { inner }))
     }
 
+    /// Try to build a matcher that accepts strings starting with `prefix`.
+    ///
+    /// Mirrors the LIKE `prefix%` path but accepts a raw literal byte
+    /// slice — handy for callers (regex) that have already classified the
+    /// pattern shape without going through LIKE wildcard syntax.
+    pub(crate) fn try_new_prefix_literal(
+        symbols: &[Symbol],
+        symbol_lengths: &[u8],
+        prefix: &[u8],
+    ) -> VortexResult<Option<Self>> {
+        if prefix.is_empty() {
+            return Ok(Some(Self {
+                inner: MatcherInner::MatchAll,
+            }));
+        }
+        if prefix.len() > FlatPrefixDfa::MAX_PREFIX_LEN {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            inner: MatcherInner::Prefix(FlatPrefixDfa::new(symbols, symbol_lengths, prefix)?),
+        }))
+    }
+
+    /// Try to build a matcher that accepts strings containing `needle`.
+    pub(crate) fn try_new_contains_literal(
+        symbols: &[Symbol],
+        symbol_lengths: &[u8],
+        needle: &[u8],
+    ) -> VortexResult<Option<Self>> {
+        if needle.is_empty() {
+            return Ok(Some(Self {
+                inner: MatcherInner::MatchAll,
+            }));
+        }
+        if needle.len() > FlatContainsDfa::MAX_NEEDLE_LEN {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            inner: MatcherInner::Contains(FlatContainsDfa::new(symbols, symbol_lengths, needle)?),
+        }))
+    }
+
     /// Run the matcher on a single FSST-compressed code sequence.
     pub(crate) fn matches(&self, codes: &[u8]) -> bool {
         match &self.inner {
