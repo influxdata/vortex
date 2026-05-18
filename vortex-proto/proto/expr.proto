@@ -85,6 +85,11 @@ message LikeOpts {
   bool case_insensitive = 2;
 }
 
+message RegexOpts {
+  bool negated = 1;
+  bool case_insensitive = 2;
+}
+
 message CastOpts {
   vortex.dtype.DType target = 1;
 }

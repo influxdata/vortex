@@ -1232,6 +1232,44 @@ pub fn vortex_proto::expr::PackOpts::clear(&mut self)
 
 pub fn vortex_proto::expr::PackOpts::encoded_len(&self) -> usize
 
+pub struct vortex_proto::expr::RegexOpts
+
+pub vortex_proto::expr::RegexOpts::case_insensitive: bool
+
+pub vortex_proto::expr::RegexOpts::negated: bool
+
+impl core::clone::Clone for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::clone(&self) -> vortex_proto::expr::RegexOpts
+
+impl core::cmp::Eq for vortex_proto::expr::RegexOpts
+
+impl core::cmp::PartialEq for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::eq(&self, &vortex_proto::expr::RegexOpts) -> bool
+
+impl core::default::Default for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::default() -> Self
+
+impl core::fmt::Debug for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl core::hash::Hash for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::hash<__H: core::hash::Hasher>(&self, &mut __H)
+
+impl core::marker::Copy for vortex_proto::expr::RegexOpts
+
+impl core::marker::StructuralPartialEq for vortex_proto::expr::RegexOpts
+
+impl prost::message::Message for vortex_proto::expr::RegexOpts
+
+pub fn vortex_proto::expr::RegexOpts::clear(&mut self)
+
+pub fn vortex_proto::expr::RegexOpts::encoded_len(&self) -> usize
+
 pub struct vortex_proto::expr::SelectOpts
 
 pub vortex_proto::expr::SelectOpts::opts: core::option::Option<vortex_proto::expr::select_opts::Opts>

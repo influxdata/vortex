@@ -151,6 +151,13 @@ pub struct LikeOpts {
     #[prost(bool, tag = "2")]
     pub case_insensitive: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RegexOpts {
+    #[prost(bool, tag = "1")]
+    pub negated: bool,
+    #[prost(bool, tag = "2")]
+    pub case_insensitive: bool,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CastOpts {
     #[prost(message, optional, tag = "1")]

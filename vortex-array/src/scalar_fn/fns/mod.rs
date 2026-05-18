@@ -18,6 +18,7 @@ pub mod merge;
 pub mod not;
 pub mod operators;
 pub mod pack;
+pub mod regex;
 pub mod root;
 pub mod select;
 pub mod stat;

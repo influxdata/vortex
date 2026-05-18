@@ -9221,6 +9221,7 @@ dependencies = [
  "prost 0.14.3",
  "rand 0.10.1",
  "rand_distr 0.6.0",
+ "regex",
  "rstest",
  "rstest_reuse",
  "rustc-hash",

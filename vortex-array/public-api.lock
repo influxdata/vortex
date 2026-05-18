@@ -2470,6 +2470,10 @@ impl vortex_array::scalar_fn::fns::mask::MaskReduce for vortex_array::arrays::di
 
 pub fn vortex_array::arrays::dict::Dict::mask(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
 
+impl vortex_array::scalar_fn::fns::regex::RegexReduce for vortex_array::arrays::dict::Dict
+
+pub fn vortex_array::arrays::dict::Dict::regex(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
 pub type vortex_array::arrays::dict::vtable::DictArray = vortex_array::Array<vortex_array::arrays::dict::Dict>
 
 pub struct vortex_array::arrays::dict::Dict
@@ -2561,6 +2565,10 @@ pub fn vortex_array::arrays::dict::Dict::like(vortex_array::ArrayView<'_, vortex
 impl vortex_array::scalar_fn::fns::mask::MaskReduce for vortex_array::arrays::dict::Dict
 
 pub fn vortex_array::arrays::dict::Dict::mask(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+impl vortex_array::scalar_fn::fns::regex::RegexReduce for vortex_array::arrays::dict::Dict
+
+pub fn vortex_array::arrays::dict::Dict::regex(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
 
 pub struct vortex_array::arrays::dict::DictData
 
@@ -6135,6 +6143,10 @@ pub fn vortex_array::arrays::dict::Dict::like(vortex_array::ArrayView<'_, vortex
 impl vortex_array::scalar_fn::fns::mask::MaskReduce for vortex_array::arrays::dict::Dict
 
 pub fn vortex_array::arrays::dict::Dict::mask(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+impl vortex_array::scalar_fn::fns::regex::RegexReduce for vortex_array::arrays::dict::Dict
+
+pub fn vortex_array::arrays::dict::Dict::regex(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
 
 pub struct vortex_array::arrays::Extension
 
@@ -13098,6 +13110,8 @@ pub fn vortex_array::expr::immediate_scope_access<'a>(&'a vortex_array::expr::Ex
 
 pub fn vortex_array::expr::immediate_scope_accesses<'a>(&'a vortex_array::expr::Expression, &'a vortex_array::dtype::StructFields) -> vortex_array::expr::FieldAccesses<'a>
 
+pub fn vortex_array::expr::iregex(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
+
 pub fn vortex_array::expr::is_not_null(vortex_array::expr::Expression) -> vortex_array::expr::Expression
 
 pub fn vortex_array::expr::is_null(vortex_array::expr::Expression) -> vortex_array::expr::Expression
@@ -13136,13 +13150,19 @@ pub fn vortex_array::expr::not_eq(vortex_array::expr::Expression, vortex_array::
 
 pub fn vortex_array::expr::not_ilike(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
 
+pub fn vortex_array::expr::not_iregex(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
+
 pub fn vortex_array::expr::not_like(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
+
+pub fn vortex_array::expr::not_regex(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
 
 pub fn vortex_array::expr::or(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
 
 pub fn vortex_array::expr::or_collect<I>(I) -> core::option::Option<vortex_array::expr::Expression> where I: core::iter::traits::collect::IntoIterator<Item = vortex_array::expr::Expression>
 
 pub fn vortex_array::expr::pack(impl core::iter::traits::collect::IntoIterator<Item = (impl core::convert::Into<vortex_array::dtype::FieldName>, vortex_array::expr::Expression)>, vortex_array::dtype::Nullability) -> vortex_array::expr::Expression
+
+pub fn vortex_array::expr::regex(vortex_array::expr::Expression, vortex_array::expr::Expression) -> vortex_array::expr::Expression
 
 pub fn vortex_array::expr::root() -> vortex_array::expr::Expression
 
@@ -13812,6 +13832,12 @@ pub type vortex_array::scalar_fn::fns::not::NotExecuteAdaptor<V>::Parent = vorte
 
 pub fn vortex_array::scalar_fn::fns::not::NotExecuteAdaptor<V>::execute_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::not::Not>, usize, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
 
+impl<V> vortex_array::kernel::ExecuteParentKernel<V> for vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V> where V: vortex_array::scalar_fn::fns::regex::RegexKernel
+
+pub type vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::regex::Regex>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::execute_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::regex::Regex>, usize, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
 impl<V> vortex_array::kernel::ExecuteParentKernel<V> for vortex_array::scalar_fn::fns::zip::ZipExecuteAdaptor<V> where V: vortex_array::scalar_fn::fns::zip::ZipKernel
 
 pub type vortex_array::scalar_fn::fns::zip::ZipExecuteAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::zip::Zip>
@@ -14175,6 +14201,12 @@ impl<V> vortex_array::optimizer::rules::ArrayParentReduceRule<V> for vortex_arra
 pub type vortex_array::scalar_fn::fns::not::NotReduceAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::not::Not>
 
 pub fn vortex_array::scalar_fn::fns::not::NotReduceAdaptor<V>::reduce_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::not::Not>, usize) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+impl<V> vortex_array::optimizer::rules::ArrayParentReduceRule<V> for vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V> where V: vortex_array::scalar_fn::fns::regex::RegexReduce
+
+pub type vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::regex::Regex>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::reduce_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::regex::Regex>, usize) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
 
 impl<V> vortex_array::optimizer::rules::ArrayParentReduceRule<V> for vortex_array::scalar_fn::fns::zip::ZipReduceAdaptor<V> where V: vortex_array::scalar_fn::fns::zip::ZipReduce
 
@@ -17944,6 +17976,132 @@ pub fn vortex_array::scalar_fn::fns::pack::PackOptions::hash<__H: core::hash::Ha
 
 impl core::marker::StructuralPartialEq for vortex_array::scalar_fn::fns::pack::PackOptions
 
+pub mod vortex_array::scalar_fn::fns::regex
+
+pub struct vortex_array::scalar_fn::fns::regex::Regex
+
+impl core::clone::Clone for vortex_array::scalar_fn::fns::regex::Regex
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::clone(&self) -> vortex_array::scalar_fn::fns::regex::Regex
+
+impl vortex_array::scalar_fn::ScalarFnVTable for vortex_array::scalar_fn::fns::regex::Regex
+
+pub type vortex_array::scalar_fn::fns::regex::Regex::Options = vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::arity(&self, &Self::Options) -> vortex_array::scalar_fn::Arity
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::child_name(&self, &Self::Options, usize) -> vortex_array::scalar_fn::ChildName
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::coerce_args(&self, &Self::Options, &[vortex_array::dtype::DType]) -> vortex_error::VortexResult<alloc::vec::Vec<vortex_array::dtype::DType>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::deserialize(&self, &[u8], &vortex_session::VortexSession) -> vortex_error::VortexResult<Self::Options>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::execute(&self, &Self::Options, &dyn vortex_array::scalar_fn::ExecutionArgs, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<vortex_array::ArrayRef>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::fmt_sql(&self, &Self::Options, &vortex_array::expr::Expression, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::id(&self) -> vortex_array::scalar_fn::ScalarFnId
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::is_fallible(&self, &Self::Options) -> bool
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::is_null_sensitive(&self, &Self::Options) -> bool
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::reduce(&self, &Self::Options, &dyn vortex_array::scalar_fn::ReduceNode, &dyn vortex_array::scalar_fn::ReduceCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::scalar_fn::ReduceNodeRef>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::return_dtype(&self, &Self::Options, &[vortex_array::dtype::DType]) -> vortex_error::VortexResult<vortex_array::dtype::DType>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::serialize(&self, &Self::Options) -> vortex_error::VortexResult<core::option::Option<alloc::vec::Vec<u8>>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::simplify(&self, &Self::Options, &vortex_array::expr::Expression, &dyn vortex_array::scalar_fn::SimplifyCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::simplify_untyped(&self, &Self::Options, &vortex_array::expr::Expression) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::stat_expression(&self, &Self::Options, &vortex_array::expr::Expression, vortex_array::expr::stats::Stat, &dyn vortex_array::expr::pruning::StatsCatalog) -> core::option::Option<vortex_array::expr::Expression>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::stat_falsification(&self, &Self::Options, &vortex_array::expr::Expression, &dyn vortex_array::expr::pruning::StatsCatalog) -> core::option::Option<vortex_array::expr::Expression>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::validity(&self, &Self::Options, &vortex_array::expr::Expression) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+pub struct vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>(pub V)
+
+impl<V: core::default::Default> core::default::Default for vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::default() -> vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>
+
+impl<V: core::fmt::Debug> core::fmt::Debug for vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl<V> vortex_array::kernel::ExecuteParentKernel<V> for vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V> where V: vortex_array::scalar_fn::fns::regex::RegexKernel
+
+pub type vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::regex::Regex>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexExecuteAdaptor<V>::execute_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::regex::Regex>, usize, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+pub struct vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub vortex_array::scalar_fn::fns::regex::RegexOptions::case_insensitive: bool
+
+pub vortex_array::scalar_fn::fns::regex::RegexOptions::negated: bool
+
+impl core::clone::Clone for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::clone(&self) -> vortex_array::scalar_fn::fns::regex::RegexOptions
+
+impl core::cmp::Eq for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+impl core::cmp::PartialEq for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::eq(&self, &vortex_array::scalar_fn::fns::regex::RegexOptions) -> bool
+
+impl core::default::Default for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::default() -> vortex_array::scalar_fn::fns::regex::RegexOptions
+
+impl core::fmt::Debug for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl core::fmt::Display for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl core::hash::Hash for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexOptions::hash<__H: core::hash::Hasher>(&self, &mut __H)
+
+impl core::marker::Copy for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+impl core::marker::StructuralPartialEq for vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub struct vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>(pub V)
+
+impl<V: core::default::Default> core::default::Default for vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::default() -> vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>
+
+impl<V: core::fmt::Debug> core::fmt::Debug for vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl<V> vortex_array::optimizer::rules::ArrayParentReduceRule<V> for vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V> where V: vortex_array::scalar_fn::fns::regex::RegexReduce
+
+pub type vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::Parent = vortex_array::arrays::scalar_fn::ExactScalarFn<vortex_array::scalar_fn::fns::regex::Regex>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexReduceAdaptor<V>::reduce_parent(&self, vortex_array::ArrayView<'_, V>, vortex_array::arrays::scalar_fn::ScalarFnArrayView<'_, vortex_array::scalar_fn::fns::regex::Regex>, usize) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+pub trait vortex_array::scalar_fn::fns::regex::RegexKernel: vortex_array::VTable
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexKernel::regex(vortex_array::ArrayView<'_, Self>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+pub trait vortex_array::scalar_fn::fns::regex::RegexReduce: vortex_array::VTable
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexReduce::regex(vortex_array::ArrayView<'_, Self>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
+impl vortex_array::scalar_fn::fns::regex::RegexReduce for vortex_array::arrays::dict::Dict
+
+pub fn vortex_array::arrays::dict::Dict::regex(vortex_array::ArrayView<'_, vortex_array::arrays::dict::Dict>, &vortex_array::ArrayRef, vortex_array::scalar_fn::fns::regex::RegexOptions) -> vortex_error::VortexResult<core::option::Option<vortex_array::ArrayRef>>
+
 pub mod vortex_array::scalar_fn::fns::root
 
 pub struct vortex_array::scalar_fn::fns::root::Root
@@ -19529,6 +19687,44 @@ pub fn vortex_array::scalar_fn::fns::pack::Pack::stat_expression(&self, &Self::O
 pub fn vortex_array::scalar_fn::fns::pack::Pack::stat_falsification(&self, &Self::Options, &vortex_array::expr::Expression, &dyn vortex_array::expr::pruning::StatsCatalog) -> core::option::Option<vortex_array::expr::Expression>
 
 pub fn vortex_array::scalar_fn::fns::pack::Pack::validity(&self, &Self::Options, &vortex_array::expr::Expression) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+impl vortex_array::scalar_fn::ScalarFnVTable for vortex_array::scalar_fn::fns::regex::Regex
+
+pub type vortex_array::scalar_fn::fns::regex::Regex::Options = vortex_array::scalar_fn::fns::regex::RegexOptions
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::arity(&self, &Self::Options) -> vortex_array::scalar_fn::Arity
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::child_name(&self, &Self::Options, usize) -> vortex_array::scalar_fn::ChildName
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::coerce_args(&self, &Self::Options, &[vortex_array::dtype::DType]) -> vortex_error::VortexResult<alloc::vec::Vec<vortex_array::dtype::DType>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::deserialize(&self, &[u8], &vortex_session::VortexSession) -> vortex_error::VortexResult<Self::Options>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::execute(&self, &Self::Options, &dyn vortex_array::scalar_fn::ExecutionArgs, &mut vortex_array::ExecutionCtx) -> vortex_error::VortexResult<vortex_array::ArrayRef>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::fmt_sql(&self, &Self::Options, &vortex_array::expr::Expression, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::id(&self) -> vortex_array::scalar_fn::ScalarFnId
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::is_fallible(&self, &Self::Options) -> bool
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::is_null_sensitive(&self, &Self::Options) -> bool
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::reduce(&self, &Self::Options, &dyn vortex_array::scalar_fn::ReduceNode, &dyn vortex_array::scalar_fn::ReduceCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::scalar_fn::ReduceNodeRef>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::return_dtype(&self, &Self::Options, &[vortex_array::dtype::DType]) -> vortex_error::VortexResult<vortex_array::dtype::DType>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::serialize(&self, &Self::Options) -> vortex_error::VortexResult<core::option::Option<alloc::vec::Vec<u8>>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::simplify(&self, &Self::Options, &vortex_array::expr::Expression, &dyn vortex_array::scalar_fn::SimplifyCtx) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::simplify_untyped(&self, &Self::Options, &vortex_array::expr::Expression) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::stat_expression(&self, &Self::Options, &vortex_array::expr::Expression, vortex_array::expr::stats::Stat, &dyn vortex_array::expr::pruning::StatsCatalog) -> core::option::Option<vortex_array::expr::Expression>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::stat_falsification(&self, &Self::Options, &vortex_array::expr::Expression, &dyn vortex_array::expr::pruning::StatsCatalog) -> core::option::Option<vortex_array::expr::Expression>
+
+pub fn vortex_array::scalar_fn::fns::regex::Regex::validity(&self, &Self::Options, &vortex_array::expr::Expression) -> vortex_error::VortexResult<core::option::Option<vortex_array::expr::Expression>>
 
 impl vortex_array::scalar_fn::ScalarFnVTable for vortex_array::scalar_fn::fns::root::Root
 

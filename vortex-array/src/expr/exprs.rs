@@ -43,6 +43,8 @@ use crate::scalar_fn::fns::operators::CompareOperator;
 use crate::scalar_fn::fns::operators::Operator;
 use crate::scalar_fn::fns::pack::Pack;
 use crate::scalar_fn::fns::pack::PackOptions;
+use crate::scalar_fn::fns::regex::Regex;
+use crate::scalar_fn::fns::regex::RegexOptions;
 use crate::scalar_fn::fns::root::Root;
 use crate::scalar_fn::fns::select::FieldSelection;
 use crate::scalar_fn::fns::select::Select;
@@ -628,6 +630,63 @@ pub fn not_like(child: Expression, pattern: Expression) -> Expression {
 pub fn not_ilike(child: Expression, pattern: Expression) -> Expression {
     Like.new_expr(
         LikeOptions {
+            negated: true,
+            case_insensitive: true,
+        },
+        [child, pattern],
+    )
+}
+
+// ---- Regex ----
+
+/// Creates a regular-expression match expression (case-sensitive).
+///
+/// Equivalent to SQL `child ~ pattern` (PostgreSQL syntax). The pattern uses
+/// the syntax accepted by the [`regex`] crate and is unanchored: a match
+/// anywhere in the input is considered a match. To require a full match,
+/// callers must include `^` and `$` in the pattern.
+pub fn regex(child: Expression, pattern: Expression) -> Expression {
+    Regex.new_expr(
+        RegexOptions {
+            negated: false,
+            case_insensitive: false,
+        },
+        [child, pattern],
+    )
+}
+
+/// Creates a case-insensitive regular-expression match expression.
+///
+/// Equivalent to SQL `child ~* pattern` (PostgreSQL syntax).
+pub fn iregex(child: Expression, pattern: Expression) -> Expression {
+    Regex.new_expr(
+        RegexOptions {
+            negated: false,
+            case_insensitive: true,
+        },
+        [child, pattern],
+    )
+}
+
+/// Creates a negated regular-expression match expression (case-sensitive).
+///
+/// Equivalent to SQL `child !~ pattern` (PostgreSQL syntax).
+pub fn not_regex(child: Expression, pattern: Expression) -> Expression {
+    Regex.new_expr(
+        RegexOptions {
+            negated: true,
+            case_insensitive: false,
+        },
+        [child, pattern],
+    )
+}
+
+/// Creates a negated case-insensitive regular-expression match expression.
+///
+/// Equivalent to SQL `child !~* pattern` (PostgreSQL syntax).
+pub fn not_iregex(child: Expression, pattern: Expression) -> Expression {
+    Regex.new_expr(
+        RegexOptions {
             negated: true,
             case_insensitive: true,
         },
