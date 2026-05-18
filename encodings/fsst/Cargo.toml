@@ -20,6 +20,8 @@ workspace = true
 fsst-rs = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true, optional = true }
+regex-automata = { workspace = true }
+rustc-hash = { workspace = true }
 vortex-array = { workspace = true }
 vortex-buffer = { workspace = true }
 vortex-error = { workspace = true }

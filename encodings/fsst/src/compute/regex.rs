@@ -3,18 +3,29 @@
 
 //! Regex matching on FSST-compressed string arrays.
 //!
-//! For regex patterns whose body is a literal (after stripping leading `^`
-//! and trailing `$`), we lift the LIKE DFA infrastructure: a `^prefix`
-//! pattern feeds the `FlatPrefixDfa` and an unanchored `needle` feeds the
-//! `FlatContainsDfa`. Both run directly on FSST symbol codes without
-//! decompressing.
+//! The kernel runs in three tiers, picking the cheapest one that can
+//! handle the pattern:
 //!
-//! Patterns that fall outside that classification — anchored exact
-//! matches, suffix anchors, character classes, escapes, alternation, or
-//! anything else with metacharacters — return `None` from the kernel and
-//! fall back to the default `Regex` execution path, which canonicalizes
-//! to `VarBinViewArray` and runs the compiled regex over the
-//! decompressed strings.
+//! 1. **Literal Prefix / Contains** (cheapest). When
+//!    [`RegexLiteralShape::analyze`] classifies the pattern as `^literal`
+//!    or unanchored `literal` (no metacharacters or escapes), we feed
+//!    the literal directly into the existing LIKE infrastructure
+//!    ([`FlatPrefixDfa`] / [`FlatContainsDfa`]). These DFAs are
+//!    hand-tuned for substring matching and have the lowest overhead.
+//!
+//! 2. **General regex DFA over FSST symbols**
+//!    ([`FsstMatcher::try_new_regex`]). For arbitrary patterns we
+//!    compile a byte-level DFA via `regex_automata`, BFS its reachable
+//!    states, and lift the byte transitions into a per-symbol table.
+//!    The runtime scan is the same per-row loop, just driven by a
+//!    larger table. Bounded by [`RegexFsstDfa::MAX_STATES`] to keep the
+//!    table size reasonable.
+//!
+//! 3. **Canonical fallback**. Patterns whose DFA is too large, that use
+//!    regex features `regex_automata` rejects, or that hit an internal
+//!    quit state return `Ok(None)` from the kernel. The executor then
+//!    canonicalises to `VarBinViewArray` and runs the compiled regex
+//!    against decompressed strings.
 
 use vortex_array::ArrayRef;
 use vortex_array::ArrayView;
@@ -41,12 +52,6 @@ impl RegexKernel for FSST {
         options: RegexOptions,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {
-        // Case-insensitive matching would need a separate DFA that folds
-        // both halves of every transition; defer to the canonical path.
-        if options.case_insensitive {
-            return Ok(None);
-        }
-
         let Some(pattern_scalar) = pattern.as_constant() else {
             return Ok(None);
         };
@@ -60,26 +65,47 @@ impl RegexKernel for FSST {
         let symbols = array.symbols();
         let symbol_lengths = array.symbol_lengths();
 
-        // Map the regex shape onto an existing FSST DFA. Exact and suffix
-        // patterns aren't covered by the prefix/contains DFAs — the
-        // prefix DFA accepts as soon as the literal matches and the
-        // contains DFA accepts at any position — so we leave those to
-        // the fallback canonical path along with any non-literal pattern.
-        let Some(shape) = RegexLiteralShape::analyze(pattern_str.as_str()) else {
-            return Ok(None);
+        // The literal-shape fast paths use byte-exact DFAs, so they only
+        // apply when the case-sensitivity matches the encoding. Force the
+        // analyzer to ignore literal shapes if the caller asked for case
+        // folding.
+        let literal_shape = if options.case_insensitive {
+            None
+        } else {
+            RegexLiteralShape::analyze(pattern_str.as_str())
         };
-        let matcher = match shape {
-            RegexLiteralShape::Prefix(prefix) => FsstMatcher::try_new_prefix_literal(
+
+        // Tier 1: literal Prefix / Contains hit the dedicated DFAs.
+        //
+        // Tier 2: anything else compiles to a general regex DFA lifted
+        // over the symbol table. Exact / Suffix shapes go through the
+        // general DFA because the literal DFAs only model "starts with"
+        // and "contains anywhere", which isn't equivalent to "equals
+        // exactly" or "ends with".
+        //
+        // Tier 3: anything the general DFA can't build (oversized state
+        // space, unsupported regex feature) returns `Ok(None)` and the
+        // canonical execution path takes over.
+        let matcher = match literal_shape {
+            Some(RegexLiteralShape::Prefix(prefix)) => FsstMatcher::try_new_prefix_literal(
                 symbols.as_slice(),
                 symbol_lengths.as_slice(),
                 prefix.as_bytes(),
             )?,
-            RegexLiteralShape::Contains(needle) => FsstMatcher::try_new_contains_literal(
+            Some(RegexLiteralShape::Contains(needle)) => FsstMatcher::try_new_contains_literal(
                 symbols.as_slice(),
                 symbol_lengths.as_slice(),
                 needle.as_bytes(),
             )?,
-            RegexLiteralShape::Exact(_) | RegexLiteralShape::Suffix(_) => return Ok(None),
+            // Exact / Suffix / non-literal / case-insensitive patterns
+            // all go through the general DFA, which honours
+            // case-insensitivity via the regex syntax config.
+            _ => FsstMatcher::try_new_regex(
+                symbols.as_slice(),
+                symbol_lengths.as_slice(),
+                pattern_str.as_str(),
+                options.case_insensitive,
+            )?,
         };
         let Some(matcher) = matcher else {
             return Ok(None);
@@ -255,27 +281,55 @@ mod tests {
         Ok(())
     }
 
-    /// Patterns with regex metacharacters must fall back to canonical
-    /// decompression — the FSST DFA only models literal prefix / contains.
+    /// Patterns with regex metacharacters now go through the general DFA
+    /// instead of falling back. Verify the kernel returns a result and
+    /// that the result is correct.
     #[test]
-    fn fsst_regex_falls_back_for_metacharacters() -> VortexResult<()> {
-        let fsst = make_fsst(&[Some("abc"), Some("def")], Nullability::NonNullable);
-        let mut ctx = SESSION.create_execution_ctx();
+    fn fsst_regex_dfa_handles_metacharacters() -> VortexResult<()> {
+        let fsst = make_fsst(
+            &[Some("abc"), Some("axc"), Some("def"), Some("abcdef")],
+            Nullability::NonNullable,
+        );
 
-        for pattern in ["a.c", "(a|b)c", "^a$", "abc$"] {
+        // Each (pattern, expected) tuple: the general DFA should handle
+        // the pattern and return the indicated bool mask.
+        let cases: &[(&str, [bool; 4])] = &[
+            // any char between a and c
+            ("a.c", [true, true, false, true]),
+            // alternation
+            ("(abc|def)", [true, false, true, true]),
+            // anchored exact (only `abc` itself, not `abcdef`)
+            ("^abc$", [true, false, false, false]),
+            // anchored suffix
+            ("def$", [false, false, true, true]),
+            // character class with quantifier
+            ("a[bx]c+", [true, true, false, true]),
+        ];
+
+        let mut ctx = SESSION.create_execution_ctx();
+        for &(pattern, expected) in cases {
             let view: ArrayView<'_, FSST> = fsst.as_view();
             let pat = ConstantArray::new(pattern, fsst.len()).into_array();
             let result =
-                <FSST as RegexKernel>::regex(view, &pat, RegexOptions::default(), &mut ctx)?;
-            assert!(
-                result.is_none(),
-                "pattern `{pattern}` should fall back to canonical"
-            );
+                <FSST as RegexKernel>::regex(view, &pat, RegexOptions::default(), &mut ctx)?
+                    .unwrap_or_else(|| panic!("pattern `{pattern}` should hit the FSST DFA"));
+            assert_arrays_eq!(result, BoolArray::from_iter(expected));
         }
+        Ok(())
+    }
 
-        // Case-insensitive also falls back.
+    /// Case-insensitive matching now flows through the general DFA via
+    /// the regex syntax config.
+    #[test]
+    fn fsst_regex_dfa_handles_case_insensitive() -> VortexResult<()> {
+        let fsst = make_fsst(
+            &[Some("ABC"), Some("abc"), Some("aBcD"), Some("xyz")],
+            Nullability::NonNullable,
+        );
+        let mut ctx = SESSION.create_execution_ctx();
+
         let view: ArrayView<'_, FSST> = fsst.as_view();
-        let pat = ConstantArray::new("abc", fsst.len()).into_array();
+        let pat = ConstantArray::new("^abc", fsst.len()).into_array();
         let result = <FSST as RegexKernel>::regex(
             view,
             &pat,
@@ -284,12 +338,47 @@ mod tests {
                 case_insensitive: true,
             },
             &mut ctx,
-        )?;
+        )?
+        .expect("case-insensitive should hit the general DFA");
+        assert_arrays_eq!(result, BoolArray::from_iter([true, true, true, false]));
+        Ok(())
+    }
+
+    /// A regex whose DFA blows past the FSST DFA state cap must fall
+    /// back to canonical execution. `(a|b)*a(a|b){n}` is the classic
+    /// NFA→DFA exponential blow-up: the DFA needs `2^(n+1)` states.
+    /// With n=10 we ask for ~2048 states, well past the 512 cap.
+    #[test]
+    fn fsst_regex_falls_back_when_dfa_too_large() -> VortexResult<()> {
+        let fsst = make_fsst(&[Some("aaa"), Some("bbb")], Nullability::NonNullable);
+        let pattern = "(a|b)*a(a|b){10}";
+
+        let mut ctx = SESSION.create_execution_ctx();
+        let view: ArrayView<'_, FSST> = fsst.as_view();
+        let pat = ConstantArray::new(pattern, fsst.len()).into_array();
+        let result = <FSST as RegexKernel>::regex(view, &pat, RegexOptions::default(), &mut ctx)?;
         assert!(
             result.is_none(),
-            "case-insensitive should fall back to canonical"
+            "oversized regex DFA should fall back to canonical"
         );
+        Ok(())
+    }
 
+    /// End-to-end through `Regex.try_new_array` + optimize for a few
+    /// non-literal regex shapes, making sure validity carries through.
+    #[test]
+    fn fsst_regex_general_with_nulls() -> VortexResult<()> {
+        let fsst = make_fsst(
+            &[Some("alpha"), None, Some("alphabet"), Some("beta"), None],
+            Nullability::Nullable,
+        );
+        // `a.+a` matches "alpha" (a..a — yes via greedy) and "alphabet"
+        // (a..a — yes), but not "beta".
+        let result = run_regex(fsst, "a.+a", RegexOptions::default())?;
+        assert_arrays_eq!(
+            &result,
+            &BoolArray::from_iter([Some(true), None, Some(true), Some(false), None])
+        );
         Ok(())
     }
 

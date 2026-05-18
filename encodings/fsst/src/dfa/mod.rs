@@ -123,6 +123,7 @@
 
 mod flat_contains;
 mod prefix;
+mod regex_dfa;
 #[cfg(test)]
 mod tests;
 
@@ -130,6 +131,7 @@ use flat_contains::FlatContainsDfa;
 use fsst::ESCAPE_CODE;
 use fsst::Symbol;
 use prefix::FlatPrefixDfa;
+use regex_dfa::RegexFsstDfa;
 use vortex_buffer::BitBuffer;
 use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
@@ -152,6 +154,7 @@ enum MatcherInner {
     MatchAll,
     Prefix(FlatPrefixDfa),
     Contains(FlatContainsDfa),
+    Regex(RegexFsstDfa),
 }
 
 impl FsstMatcher {
@@ -230,12 +233,32 @@ impl FsstMatcher {
         }))
     }
 
+    /// Try to build a matcher for an arbitrary regular expression.
+    ///
+    /// Returns `Ok(None)` if the regex is unsupported by `regex_automata`
+    /// or if its DFA exceeds the FSST DFA's state-space cap, in which
+    /// case the caller should fall back to canonical decompression.
+    pub(crate) fn try_new_regex(
+        symbols: &[Symbol],
+        symbol_lengths: &[u8],
+        pattern: &str,
+        case_insensitive: bool,
+    ) -> VortexResult<Option<Self>> {
+        match RegexFsstDfa::try_new(symbols, symbol_lengths, pattern, case_insensitive)? {
+            Some(dfa) => Ok(Some(Self {
+                inner: MatcherInner::Regex(dfa),
+            })),
+            None => Ok(None),
+        }
+    }
+
     /// Run the matcher on a single FSST-compressed code sequence.
     pub(crate) fn matches(&self, codes: &[u8]) -> bool {
         match &self.inner {
             MatcherInner::MatchAll => true,
             MatcherInner::Prefix(dfa) => dfa.matches(codes),
             MatcherInner::Contains(dfa) => dfa.matches(codes),
+            MatcherInner::Regex(dfa) => dfa.matches(codes),
         }
     }
 }
