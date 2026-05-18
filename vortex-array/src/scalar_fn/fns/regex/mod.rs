@@ -24,12 +24,20 @@ use crate::arrays::VarBinViewArray;
 use crate::arrays::varbinview::VarBinViewArrayExt;
 use crate::dtype::DType;
 use crate::expr::Expression;
+use crate::expr::StatsCatalog;
 use crate::expr::and;
+use crate::expr::gt;
+use crate::expr::gt_eq;
+use crate::expr::lit;
+use crate::expr::lt;
+use crate::expr::or;
+use crate::scalar::StringLike;
 use crate::scalar_fn::Arity;
 use crate::scalar_fn::ChildName;
 use crate::scalar_fn::ExecutionArgs;
 use crate::scalar_fn::ScalarFnId;
 use crate::scalar_fn::ScalarFnVTable;
+use crate::scalar_fn::fns::literal::Literal;
 use crate::validity::Validity;
 
 /// Options for the [`Regex`] scalar function.
@@ -166,6 +174,120 @@ impl ScalarFnVTable for Regex {
     fn is_null_sensitive(&self, _instance: &Self::Options) -> bool {
         false
     }
+
+    fn stat_falsification(
+        &self,
+        options: &Self::Options,
+        expr: &Expression,
+        catalog: &dyn StatsCatalog,
+    ) -> Option<Expression> {
+        // Attempt min/max pruning for `^literal$` (exact) and `^literal`
+        // (prefix). Case-insensitive and negated forms aren't safely
+        // representable as lexicographic bounds, so we leave them alone.
+        if options.negated || options.case_insensitive {
+            return None;
+        }
+
+        let pat = expr.child(1).as_::<Literal>();
+        let pat_str = pat.as_utf8().value()?;
+        let src = expr.child(0).clone();
+        let src_min = src.stat_min(catalog)?;
+        let src_max = src.stat_max(catalog)?;
+
+        match RegexLiteralShape::analyze(pat_str.as_str())? {
+            RegexLiteralShape::Exact(text) => {
+                // col ~ '^exact$' ⟹ col.min > 'exact' || col.max < 'exact'
+                Some(or(gt(src_min, lit(text)), lt(src_max, lit(text))))
+            }
+            RegexLiteralShape::Prefix(prefix) => {
+                // col ~ '^prefix' ⟹ col.min >= succ(prefix) || col.max < prefix
+                let succ = prefix.to_string().increment().ok()?;
+                Some(or(gt_eq(src_min, lit(succ)), lt(src_max, lit(prefix))))
+            }
+            // Suffix/contains patterns can't be pruned by min/max bounds.
+            RegexLiteralShape::Suffix(_) | RegexLiteralShape::Contains(_) => None,
+        }
+    }
+}
+
+/// Classification of a regex pattern that contains only literal bytes
+/// (no metacharacters or escapes).
+///
+/// The classifier strips an optional leading `^` and trailing `$` and
+/// inspects the remaining body for any regex metacharacter. Patterns that
+/// use escapes (e.g. `\d`, `\.`) are conservatively rejected — we'd need
+/// a full regex parser to know whether each backslash makes the
+/// surrounding bytes literal or special.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegexLiteralShape<'a> {
+    /// `^literal$` — match the input exactly.
+    Exact(&'a str),
+    /// `^literal` — match strings that start with `literal`.
+    Prefix(&'a str),
+    /// `literal$` — match strings that end with `literal`.
+    Suffix(&'a str),
+    /// `literal` (no anchors) — match strings that contain `literal`.
+    Contains(&'a str),
+}
+
+impl<'a> RegexLiteralShape<'a> {
+    /// Attempt to classify `pattern` as one of the literal shapes.
+    ///
+    /// Returns `None` if the pattern contains any regex metacharacter or
+    /// backslash in its body, since those can change the semantics of
+    /// otherwise-literal characters.
+    pub fn analyze(pattern: &'a str) -> Option<Self> {
+        let (start_anchor, after_start) = match pattern.strip_prefix('^') {
+            Some(rest) => (true, rest),
+            None => (false, pattern),
+        };
+        let (end_anchor, body) = match after_start.strip_suffix('$') {
+            Some(rest) => (true, rest),
+            None => (false, after_start),
+        };
+        if !is_literal_body(body.as_bytes()) {
+            return None;
+        }
+        Some(match (start_anchor, end_anchor) {
+            (true, true) => Self::Exact(body),
+            (true, false) => Self::Prefix(body),
+            (false, true) => Self::Suffix(body),
+            (false, false) => Self::Contains(body),
+        })
+    }
+
+    /// The literal substring that the pattern is built around.
+    pub fn literal(&self) -> &'a str {
+        match self {
+            Self::Exact(s) | Self::Prefix(s) | Self::Suffix(s) | Self::Contains(s) => s,
+        }
+    }
+}
+
+/// Returns true iff every byte in `body` is a literal regex character.
+///
+/// Rejects all regex metacharacters and backslash escapes. Bytes outside
+/// ASCII are accepted as literals — non-ASCII regex syntax only enters
+/// via `\u{...}` escapes, which the backslash check already catches.
+fn is_literal_body(body: &[u8]) -> bool {
+    !body.iter().any(|b| {
+        matches!(
+            b,
+            b'.' | b'*'
+                | b'+'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    })
 }
 
 /// Default execution path for the [`Regex`] scalar function.
@@ -398,6 +520,84 @@ mod tests {
         let err = run_regex(arr, "(", RegexOptions::default()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("regex"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn literal_shape_analyzer() {
+        use RegexLiteralShape::*;
+        assert_eq!(RegexLiteralShape::analyze("^foo$"), Some(Exact("foo")));
+        assert_eq!(RegexLiteralShape::analyze("^foo"), Some(Prefix("foo")));
+        assert_eq!(RegexLiteralShape::analyze("foo$"), Some(Suffix("foo")));
+        assert_eq!(RegexLiteralShape::analyze("foo"), Some(Contains("foo")));
+        // Empty literal forms are still literal.
+        assert_eq!(RegexLiteralShape::analyze("^$"), Some(Exact("")));
+        assert_eq!(RegexLiteralShape::analyze("^"), Some(Prefix("")));
+        assert_eq!(RegexLiteralShape::analyze("$"), Some(Suffix("")));
+        assert_eq!(RegexLiteralShape::analyze(""), Some(Contains("")));
+
+        // Metacharacters in the body disqualify the pattern.
+        assert!(RegexLiteralShape::analyze("^a.b").is_none());
+        assert!(RegexLiteralShape::analyze("^a*").is_none());
+        assert!(RegexLiteralShape::analyze("^(a|b)$").is_none());
+        // Escapes are conservatively rejected: \. is a literal '.', but
+        // distinguishing that from \d requires parsing the regex.
+        assert!(RegexLiteralShape::analyze("^a\\.b").is_none());
+        // Anchors inside the body (after the leading/trailing strip) are
+        // not allowed either.
+        assert!(RegexLiteralShape::analyze("^a^b").is_none());
+        assert!(RegexLiteralShape::analyze("a$b$").is_none());
+    }
+
+    #[test]
+    fn regex_stat_falsification() {
+        use crate::expr::col;
+        use crate::expr::pruning::pruning_expr::TrackingStatsCatalog;
+
+        let catalog = TrackingStatsCatalog::default();
+
+        // Anchored prefix produces the same shape as LIKE 'prefix%' pruning.
+        let pruning = regex_expr(col("a"), lit("^prefix"))
+            .stat_falsification(&catalog)
+            .expect("anchored prefix should prune");
+        insta::assert_snapshot!(pruning, @r#"(($.a_min >= "prefiy") or ($.a_max < "prefix"))"#);
+
+        // Anchored exact mirrors LIKE exact pruning.
+        let pruning = regex_expr(col("a"), lit("^exactly$"))
+            .stat_falsification(&catalog)
+            .expect("anchored exact should prune");
+        insta::assert_snapshot!(pruning, @r#"(($.a_min > "exactly") or ($.a_max < "exactly"))"#);
+
+        // Contains and suffix patterns have no min/max pruning.
+        assert!(
+            regex_expr(col("a"), lit("suffix$"))
+                .stat_falsification(&catalog)
+                .is_none()
+        );
+        assert!(
+            regex_expr(col("a"), lit("contains"))
+                .stat_falsification(&catalog)
+                .is_none()
+        );
+
+        // Negated and case-insensitive variants don't prune even on
+        // otherwise-literal patterns.
+        assert!(
+            not_regex(col("a"), lit("^prefix"))
+                .stat_falsification(&catalog)
+                .is_none()
+        );
+        assert!(
+            iregex(col("a"), lit("^prefix"))
+                .stat_falsification(&catalog)
+                .is_none()
+        );
+
+        // Non-literal regex doesn't prune.
+        assert!(
+            regex_expr(col("a"), lit("^a.b"))
+                .stat_falsification(&catalog)
+                .is_none()
+        );
     }
 
     #[test]

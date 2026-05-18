@@ -17978,6 +17978,40 @@ impl core::marker::StructuralPartialEq for vortex_array::scalar_fn::fns::pack::P
 
 pub mod vortex_array::scalar_fn::fns::regex
 
+pub enum vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+pub vortex_array::scalar_fn::fns::regex::RegexLiteralShape::Contains(&'a str)
+
+pub vortex_array::scalar_fn::fns::regex::RegexLiteralShape::Exact(&'a str)
+
+pub vortex_array::scalar_fn::fns::regex::RegexLiteralShape::Prefix(&'a str)
+
+pub vortex_array::scalar_fn::fns::regex::RegexLiteralShape::Suffix(&'a str)
+
+impl<'a> vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>::analyze(&'a str) -> core::option::Option<Self>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>::literal(&self) -> &'a str
+
+impl<'a> core::clone::Clone for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>::clone(&self) -> vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+impl<'a> core::cmp::Eq for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+impl<'a> core::cmp::PartialEq for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>::eq(&self, &vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>) -> bool
+
+impl<'a> core::fmt::Debug for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+pub fn vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+
+impl<'a> core::marker::Copy for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
+impl<'a> core::marker::StructuralPartialEq for vortex_array::scalar_fn::fns::regex::RegexLiteralShape<'a>
+
 pub struct vortex_array::scalar_fn::fns::regex::Regex
 
 impl core::clone::Clone for vortex_array::scalar_fn::fns::regex::Regex
