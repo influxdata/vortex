@@ -40,6 +40,8 @@ use vortex::scalar_fn::fns::binary::Binary;
 use vortex::scalar_fn::fns::like::Like;
 use vortex::scalar_fn::fns::like::LikeOptions;
 use vortex::scalar_fn::fns::operators::Operator;
+use vortex::scalar_fn::fns::regex::Regex;
+use vortex::scalar_fn::fns::regex::RegexOptions;
 
 use crate::convert::FromDataFusion;
 
@@ -198,6 +200,11 @@ impl ExpressionConvertor for DefaultExpressionConvertor {
         if let Some(binary_expr) = df.as_any().downcast_ref::<df_expr::BinaryExpr>() {
             let left = self.convert(binary_expr.left().as_ref())?;
             let right = self.convert(binary_expr.right().as_ref())?;
+
+            if let Some(options) = regex_options_from_df(binary_expr.op()) {
+                return Ok(Regex.new_expr(options, [left, right]));
+            }
+
             let operator = try_operator_from_df(binary_expr.op())?;
 
             return Ok(Binary.new_expr(operator, [left, right]));
@@ -353,6 +360,33 @@ impl ExpressionConvertor for DefaultExpressionConvertor {
     }
 }
 
+/// Maps DataFusion regex binary operators to Vortex [`RegexOptions`].
+///
+/// Returns `None` if `op` is not a regex operator. The match-style operators
+/// (`~`, `~*`, `!~`, `!~*`) become Vortex `vortex.regex` calls instead of
+/// `vortex.binary` calls.
+fn regex_options_from_df(op: &DFOperator) -> Option<RegexOptions> {
+    match op {
+        DFOperator::RegexMatch => Some(RegexOptions {
+            negated: false,
+            case_insensitive: false,
+        }),
+        DFOperator::RegexIMatch => Some(RegexOptions {
+            negated: false,
+            case_insensitive: true,
+        }),
+        DFOperator::RegexNotMatch => Some(RegexOptions {
+            negated: true,
+            case_insensitive: false,
+        }),
+        DFOperator::RegexNotIMatch => Some(RegexOptions {
+            negated: true,
+            case_insensitive: true,
+        }),
+        _ => None,
+    }
+}
+
 fn try_operator_from_df(value: &DFOperator) -> DFResult<Operator> {
     match value {
         DFOperator::Eq => Ok(Operator::Eq),
@@ -478,7 +512,8 @@ fn is_convertible_expr(df_expr: &Arc<dyn PhysicalExpr>) -> bool {
 }
 
 fn can_binary_be_pushed_down(binary: &df_expr::BinaryExpr, schema: &Schema) -> bool {
-    let is_op_supported = try_operator_from_df(binary.op()).is_ok();
+    let is_op_supported =
+        try_operator_from_df(binary.op()).is_ok() || regex_options_from_df(binary.op()).is_some();
     is_op_supported
         && can_be_pushed_down_impl(binary.left(), schema)
         && can_be_pushed_down_impl(binary.right(), schema)
@@ -700,6 +735,66 @@ mod tests {
         │   └── input: vortex.root()
         └── rhs: vortex.literal(42i32)
         ");
+    }
+
+    #[rstest]
+    #[case::regex_match(DFOperator::RegexMatch, false, false)]
+    #[case::regex_imatch(DFOperator::RegexIMatch, false, true)]
+    #[case::regex_not_match(DFOperator::RegexNotMatch, true, false)]
+    #[case::regex_not_imatch(DFOperator::RegexNotIMatch, true, true)]
+    fn test_expr_from_df_regex(
+        #[case] df_op: DFOperator,
+        #[case] negated: bool,
+        #[case] case_insensitive: bool,
+    ) {
+        let left = Arc::new(df_expr::Column::new("text_col", 0)) as Arc<dyn PhysicalExpr>;
+        let right = Arc::new(df_expr::Literal::new(ScalarValue::Utf8(Some(
+            "^abc".to_string(),
+        )))) as Arc<dyn PhysicalExpr>;
+        let binary_expr = df_expr::BinaryExpr::new(left, df_op, right);
+
+        let result = DefaultExpressionConvertor::default()
+            .convert(&binary_expr)
+            .unwrap();
+        let regex_opts = result.as_::<Regex>();
+        assert_eq!(
+            regex_opts,
+            &RegexOptions {
+                negated,
+                case_insensitive,
+            }
+        );
+    }
+
+    #[rstest]
+    #[case::regex_match(DFOperator::RegexMatch)]
+    #[case::regex_imatch(DFOperator::RegexIMatch)]
+    #[case::regex_not_match(DFOperator::RegexNotMatch)]
+    #[case::regex_not_imatch(DFOperator::RegexNotIMatch)]
+    fn test_can_be_pushed_down_regex(test_schema: Schema, #[case] df_op: DFOperator) {
+        let left = Arc::new(df_expr::Column::new("name", 1)) as Arc<dyn PhysicalExpr>;
+        let right = Arc::new(df_expr::Literal::new(ScalarValue::Utf8(Some(
+            "^abc".to_string(),
+        )))) as Arc<dyn PhysicalExpr>;
+        let regex_expr =
+            Arc::new(df_expr::BinaryExpr::new(left, df_op, right)) as Arc<dyn PhysicalExpr>;
+
+        assert!(can_be_pushed_down_impl(&regex_expr, &test_schema));
+    }
+
+    #[rstest]
+    fn test_can_be_pushed_down_regex_unsupported_operand(test_schema: Schema) {
+        let left = Arc::new(df_expr::Column::new("unsupported_list", 5)) as Arc<dyn PhysicalExpr>;
+        let right = Arc::new(df_expr::Literal::new(ScalarValue::Utf8(Some(
+            "^abc".to_string(),
+        )))) as Arc<dyn PhysicalExpr>;
+        let regex_expr = Arc::new(df_expr::BinaryExpr::new(
+            left,
+            DFOperator::RegexMatch,
+            right,
+        )) as Arc<dyn PhysicalExpr>;
+
+        assert!(!can_be_pushed_down_impl(&regex_expr, &test_schema));
     }
 
     #[rstest]
