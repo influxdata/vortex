@@ -19,12 +19,24 @@ use vortex_array::arrays::DictArray;
 use vortex_array::arrays::SharedArray;
 use vortex_array::dtype::DType;
 use vortex_array::dtype::FieldMask;
+use vortex_array::dtype::Nullability;
+use vortex_array::dtype::PType;
 use vortex_array::expr::Expression;
+use vortex_array::expr::eq;
+use vortex_array::expr::lit;
+use vortex_array::expr::or_collect;
 use vortex_array::expr::root;
 use vortex_array::optimizer::ArrayOptimizer;
+use vortex_array::scalar::Scalar;
+use vortex_array::scalar_fn::fns::binary::Binary;
+use vortex_array::scalar_fn::fns::literal::Literal;
+use vortex_array::scalar_fn::fns::operators::Operator;
+use vortex_array::scalar_fn::fns::root::Root;
 use vortex_error::VortexError;
 use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
+use vortex_error::vortex_bail;
+use vortex_mask::AllOr;
 use vortex_mask::Mask;
 use vortex_session::VortexSession;
 use vortex_utils::aliases::dash_map::DashMap;
@@ -175,15 +187,78 @@ impl LayoutReader for DictReader {
 
     fn pruning_evaluation(
         &self,
-        _row_range: &Range<u64>,
-        _expr: &Expression,
+        row_range: &Range<u64>,
+        expr: &Expression,
         mask: Mask,
     ) -> VortexResult<MaskFuture> {
-        // NOTE: we can get the values here, convert expression to the codes domain, and push down
-        // to the codes child. We don't do that here because:
-        // - Reading values only for an approx filter is expensive
-        // - In practice, all stats based pruning evaluation should be already done upstream of this dict reader
-        Ok(MaskFuture::ready(mask))
+        // Translate a value-domain equality / IN predicate into the *code* domain
+        // and push it down to the codes child. This is the only expression shape
+        // for which dict-code pruning is both sound and selective:
+        //
+        //   * a value maps to a single code, so `value == lit` becomes
+        //     `code == code_of(lit)` — and a zone whose stored code min/max
+        //     excludes that code provably holds no matching row;
+        //   * when the codes are storage-monotonic (e.g. a trailing series-key
+        //     tag, whose distinct values each occupy one contiguous run), the
+        //     per-zone code min/max are tight and disjoint, so a point lookup
+        //     localizes to ~1 zone where the decoded-value min/max would admit
+        //     every zone.
+        //
+        // Range predicates are excluded (codes are assigned in first-appearance
+        // / storage order, not value order, so a value range is not a code
+        // range), as are null-sensitive predicates (`IS NULL`): zone min/max
+        // ignore nulls, so they must never drive a skip.
+        if !is_prunable_dict_eq(expr) {
+            return Ok(MaskFuture::ready(mask));
+        }
+
+        // The rewritten predicate must compare against the codes child's own
+        // primitive type. If that can't be determined, fall through to no-op.
+        let Ok(codes_ptype) = PType::try_from(self.codes.dtype()) else {
+            return Ok(MaskFuture::ready(mask));
+        };
+
+        // Evaluate the predicate against the (small, cached) dictionary values to
+        // find which entries — i.e. which codes — satisfy it. This reuses the
+        // exact values-domain evaluation the filter path uses.
+        let values_eval = self.values_eval(expr.clone());
+        let codes = Arc::clone(&self.codes);
+        let row_range = row_range.clone();
+        let session = self.session.clone();
+        let mask_len = mask.len();
+
+        Ok(MaskFuture::new(mask_len, async move {
+            let bool_over_values = values_eval.map_err(VortexError::from).await?;
+            let mut ctx = session.create_execution_ctx();
+            let satisfied = bool_over_values.execute::<Mask>(&mut ctx)?;
+
+            let code_indices: Vec<usize> = match satisfied.indices() {
+                AllOr::All => (0..satisfied.len()).collect(),
+                AllOr::None => Vec::new(),
+                AllOr::Some(idxs) => idxs.to_vec(),
+            };
+
+            // No dictionary entry matches: the literal(s) are absent from this
+            // dictionary run, so no row in its range can match. Prune it all.
+            if code_indices.is_empty() {
+                return Ok(Mask::new_false(mask_len));
+            }
+
+            // Rewrite into the code domain: `code == c0 OR code == c1 OR ...`.
+            let mut code_terms = Vec::with_capacity(code_indices.len());
+            for code in code_indices {
+                code_terms.push(eq(root(), lit(code_scalar(code, codes_ptype)?)));
+            }
+            let rewritten = or_collect(code_terms).vortex_expect("code_terms is non-empty");
+
+            // Delegate to the codes child. When the codes are zoned (i.e. the
+            // writer nested `Dict(Zoned(codes), values)`), this prunes via the
+            // tight per-zone code min/max. Otherwise the codes child carries no
+            // zone stats and this is a no-op beyond the membership check above.
+            codes
+                .pruning_evaluation(&row_range, &rewritten, mask)?
+                .await
+        }))
     }
 
     fn filter_evaluation(
@@ -256,6 +331,51 @@ impl LayoutReader for DictReader {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// Whether `expr` is a dict-root equality (`root == lit`), or an OR-tree of such
+/// equalities (the `IN`-list shape), with non-null literals.
+///
+/// These are exactly the predicates whose value-domain membership maps cleanly
+/// onto specific dictionary codes, making code-domain zone pruning sound. Range
+/// and null-sensitive predicates are intentionally rejected (see
+/// [`DictReader::pruning_evaluation`]).
+fn is_prunable_dict_eq(expr: &Expression) -> bool {
+    if !expr.is::<Binary>() {
+        return false;
+    }
+    match *expr.as_::<Binary>() {
+        Operator::Eq => {
+            let lhs = expr.child(0);
+            let rhs = expr.child(1);
+            (lhs.is::<Root>() && is_non_null_literal(rhs))
+                || (rhs.is::<Root>() && is_non_null_literal(lhs))
+        }
+        Operator::Or => is_prunable_dict_eq(expr.child(0)) && is_prunable_dict_eq(expr.child(1)),
+        _ => false,
+    }
+}
+
+/// Whether `expr` is a literal whose scalar value is non-null.
+fn is_non_null_literal(expr: &Expression) -> bool {
+    expr.is::<Literal>() && !expr.as_::<Literal>().is_null()
+}
+
+/// Build a code-domain literal scalar for dict code `code`, typed to match the
+/// codes child's primitive type so the rewritten `code == lit` compares cleanly.
+fn code_scalar(code: usize, codes_ptype: PType) -> VortexResult<Scalar> {
+    let n = Nullability::NonNullable;
+    Ok(match codes_ptype {
+        PType::U8 => Scalar::primitive(code as u8, n),
+        PType::U16 => Scalar::primitive(code as u16, n),
+        PType::U32 => Scalar::primitive(code as u32, n),
+        PType::U64 => Scalar::primitive(code as u64, n),
+        PType::I8 => Scalar::primitive(code as i8, n),
+        PType::I16 => Scalar::primitive(code as i16, n),
+        PType::I32 => Scalar::primitive(code as i32, n),
+        PType::I64 => Scalar::primitive(code as i64, n),
+        other => vortex_bail!("unexpected dict codes ptype {other:?} for code-domain pruning"),
+    })
 }
 
 #[cfg(test)]
