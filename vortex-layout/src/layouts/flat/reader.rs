@@ -18,6 +18,7 @@ use vortex_array::expr::Expression;
 use vortex_array::serde::SerializedArray;
 use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
+use vortex_mask::AllOr;
 use vortex_mask::Mask;
 use vortex_session::VortexSession;
 
@@ -33,6 +34,60 @@ use crate::segments::SegmentSource;
 // TODO(ngates): more experimentation is needed, and this should probably be dynamic based on the
 //  actual expression? Perhaps all expressions are given a selection mask to decide for themselves?
 const EXPR_EVAL_THRESHOLD: f64 = 0.2;
+
+/// When a selection mask's true rows are confined to a contiguous sub-span no
+/// wider than this fraction of the (row-range-sliced) array, slice the still-
+/// encoded array down to that span before decoding. This is the zone-map-pruned
+/// point-lookup case (e.g. a single dict-code run): the post-prune mask is dense
+/// within a tight range, so decoding only that range — rather than the whole
+/// ~8192-row segment to return a handful of rows — cuts the decompress
+/// proportionally. A broad scan (mask spanning the whole range, or all-true)
+/// fails the test and keeps today's full-range path.
+const DENSE_RANGE_FRACTION: f64 = 0.5;
+
+/// If `mask`'s true rows occupy a contiguous sub-span `[lo, hi]` that is
+/// materially narrower than `array` (see [`DENSE_RANGE_FRACTION`]), return the
+/// array and mask sliced to `lo..hi+1` plus the offset `lo`; otherwise return
+/// them unchanged with offset `0`. Slicing a still-encoded array is lazy/cheap
+/// for the seekable encodings the writer emits, so the subsequent
+/// `filter`/`apply` decodes only the retained span. The set of selected rows is
+/// unchanged — every true bit lies within `[lo, hi]` — so callers get identical
+/// results, only less decode.
+fn narrow_to_true_span(array: ArrayRef, mask: Mask) -> VortexResult<(ArrayRef, Mask, usize)> {
+    // An all-true mask already covers the whole range; nothing to narrow.
+    if mask.all_true() {
+        return Ok((array, mask, 0));
+    }
+    let len = array.len();
+    let (Some(lo), Some(hi)) = (mask.first(), mask.last()) else {
+        // No true rows (all-false): leave unchanged — the filter yields an empty
+        // array regardless, and slicing to 0 rows would need a length rebuild.
+        return Ok((array, mask, 0));
+    };
+    let span = hi - lo + 1;
+    if span < len && (span as f64) <= DENSE_RANGE_FRACTION * (len as f64) {
+        let sliced = array.slice(lo..hi + 1)?;
+        let mask = mask.slice(lo..hi + 1);
+        Ok((sliced, mask, lo))
+    } else {
+        Ok((array, mask, 0))
+    }
+}
+
+/// Re-expand a result mask computed over a narrowed sub-range `[offset, offset +
+/// sub.len())` back to the full `full_len`, placing `sub` at `offset` and `false`
+/// everywhere else. Inverse of the slice in [`narrow_to_true_span`]; a no-op when
+/// the range was not narrowed.
+fn expand_mask(sub: Mask, offset: usize, full_len: usize) -> Mask {
+    if offset == 0 && sub.len() == full_len {
+        return sub;
+    }
+    match sub.indices() {
+        AllOr::All => Mask::from_slices(full_len, vec![(offset, offset + sub.len())]),
+        AllOr::None => Mask::new_false(full_len),
+        AllOr::Some(idx) => Mask::from_indices(full_len, idx.iter().map(|&i| i + offset)),
+    }
+}
 
 pub struct FlatReader {
     layout: FlatLayout,
@@ -137,9 +192,6 @@ impl LayoutReader for FlatReader {
         let session = self.session.clone();
 
         Ok(MaskFuture::new(mask.len(), async move {
-            // TODO(ngates): if the mask density is low enough, or if the mask is dense within a range
-            //  (as often happens with zone map pruning), then we could slice/filter the array prior
-            //  to evaluating the expression.
             let mut array = array.clone().await?;
             let mask = mask.await?;
 
@@ -148,7 +200,15 @@ impl LayoutReader for FlatReader {
                 array = array.slice(row_range.clone())?;
             }
 
-            let array_mask = if mask.density() < EXPR_EVAL_THRESHOLD {
+            // When the working mask is dense within a tight sub-range (zone-map
+            // pruning), slice the still-encoded array down to that span before
+            // evaluating the expression so only that range is decoded. Rows
+            // outside the span are already deselected, so the result over them is
+            // `false` regardless — `expand_mask` restores the full length below.
+            let full_len = mask.len();
+            let (array, mask, offset) = narrow_to_true_span(array, mask)?;
+
+            let sub_mask = if mask.density() < EXPR_EVAL_THRESHOLD {
                 // We have the choice to apply the filter or the expression first, we apply the
                 // expression first so that it can try pushing down itself and then the filter
                 // after this.
@@ -167,11 +227,13 @@ impl LayoutReader for FlatReader {
                 mask.bitand(&array_mask)
             };
 
+            let array_mask = expand_mask(sub_mask, offset, full_len);
+
             trace!(
-                "Flat mask evaluation {} - {} (mask = {}) => {}",
+                "Flat mask evaluation {} - {} (offset = {}) => {}",
                 name,
                 expr,
-                mask.density(),
+                offset,
                 array_mask.density(),
             );
 
@@ -203,6 +265,15 @@ impl LayoutReader for FlatReader {
             if row_range.start > 0 || row_range.end < array.len() {
                 array = array.slice(row_range.clone())?;
             }
+
+            // When the mask is dense within a tight sub-range (zone-map pruning),
+            // slice the still-encoded array down to that span before decoding so
+            // only that range is decompressed — the dict-code-pruned point lookup
+            // decodes the surviving run, not the whole ~8192-row segment. The
+            // filter below selects the same rows (every true bit lies within the
+            // span), so the projected output is unchanged. The result is the
+            // filtered rows in order, so no offset remap is needed.
+            let (mut array, mask, _offset) = narrow_to_true_span(array, mask)?;
 
             // First apply the filter to the array.
             // NOTE(ngates): we *must* filter first before applying the expression, as the
@@ -243,6 +314,7 @@ mod test {
     use vortex_error::VortexResult;
     use vortex_io::runtime::single::block_on;
     use vortex_io::session::RuntimeSessionExt;
+    use vortex_mask::Mask;
 
     use crate::LayoutStrategy;
     use crate::layouts::flat::writer::FlatLayoutStrategy;
@@ -359,6 +431,119 @@ mod test {
 
             let expected = PrimitiveArray::new(buffer![3i32, 4], Validity::AllValid).into_array();
             assert_arrays_eq!(result, expected);
+        })
+    }
+
+    fn true_indices(mask: &Mask) -> Vec<usize> {
+        (0..mask.len()).filter(|&i| mask.value(i)).collect()
+    }
+
+    /// `projection_evaluation` with a mask whose true rows are confined to a tight
+    /// sub-span (40..46 of 100) takes the slice-before-decode path and returns
+    /// exactly the selected rows, identical to the full-range path.
+    #[test]
+    fn flat_dense_in_range_projection_parity() {
+        block_on(|handle| async {
+            let session = SESSION.clone().with_handle(handle);
+            let ctx = ArrayContext::empty();
+            let segments = Arc::new(TestSegments::default());
+            let (ptr, eof) = SequenceId::root().split();
+            let array = PrimitiveArray::from_iter(0i32..100).into_array();
+            let layout = FlatLayoutStrategy::default()
+                .write_stream(
+                    ctx,
+                    Arc::<TestSegments>::clone(&segments),
+                    array.to_array_stream().sequenced(ptr),
+                    eof,
+                    &session,
+                )
+                .await
+                .unwrap();
+
+            let mask = Mask::from_indices(100, [40, 41, 42, 43, 44, 45]);
+            let result = layout
+                .new_reader("".into(), segments, &SESSION)
+                .unwrap()
+                .projection_evaluation(&(0..100), &root(), MaskFuture::ready(mask))
+                .unwrap()
+                .await
+                .unwrap();
+
+            let expected = PrimitiveArray::from_iter(40i32..46).into_array();
+            assert_arrays_eq!(result, expected);
+        })
+    }
+
+    /// `filter_evaluation` with a dense-in-range mask narrows the decode then
+    /// `expand_mask` restores the full row-range: selection `{40..46}` ∧ `value >
+    /// 42` ⇒ exactly `{43,44,45}` true in a length-100 mask — identical to the
+    /// non-narrowed result.
+    #[test]
+    fn flat_dense_in_range_filter_parity() {
+        block_on(|handle| async {
+            let session = SESSION.clone().with_handle(handle);
+            let ctx = ArrayContext::empty();
+            let segments = Arc::new(TestSegments::default());
+            let (ptr, eof) = SequenceId::root().split();
+            let array = PrimitiveArray::from_iter(0i32..100).into_array();
+            let layout = FlatLayoutStrategy::default()
+                .write_stream(
+                    ctx,
+                    Arc::<TestSegments>::clone(&segments),
+                    array.to_array_stream().sequenced(ptr),
+                    eof,
+                    &session,
+                )
+                .await
+                .unwrap();
+
+            let mask = Mask::from_indices(100, [40, 41, 42, 43, 44, 45]);
+            let expr = gt(root(), lit(42i32));
+            let result = layout
+                .new_reader("".into(), segments, &SESSION)
+                .unwrap()
+                .filter_evaluation(&(0..100), &expr, MaskFuture::ready(mask))
+                .unwrap()
+                .await
+                .unwrap();
+
+            assert_eq!(result.len(), 100, "result must span the full row range");
+            assert_eq!(true_indices(&result), vec![43, 44, 45]);
+        })
+    }
+
+    /// A broad (all-true) selection mask is NOT narrowed, so `filter_evaluation`
+    /// keeps today's full-range path: `value > 50` ⇒ rows `51..100`. Guards the
+    /// non-dense (q1/q3) path against the slice-before-decode change.
+    #[test]
+    fn flat_broad_mask_filter_unchanged() {
+        block_on(|handle| async {
+            let session = SESSION.clone().with_handle(handle);
+            let ctx = ArrayContext::empty();
+            let segments = Arc::new(TestSegments::default());
+            let (ptr, eof) = SequenceId::root().split();
+            let array = PrimitiveArray::from_iter(0i32..100).into_array();
+            let layout = FlatLayoutStrategy::default()
+                .write_stream(
+                    ctx,
+                    Arc::<TestSegments>::clone(&segments),
+                    array.to_array_stream().sequenced(ptr),
+                    eof,
+                    &session,
+                )
+                .await
+                .unwrap();
+
+            let expr = gt(root(), lit(50i32));
+            let result = layout
+                .new_reader("".into(), segments, &SESSION)
+                .unwrap()
+                .filter_evaluation(&(0..100), &expr, MaskFuture::new_true(100))
+                .unwrap()
+                .await
+                .unwrap();
+
+            assert_eq!(true_indices(&result), (51..100).collect::<Vec<_>>());
         })
     }
 }
