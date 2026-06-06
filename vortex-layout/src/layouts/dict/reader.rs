@@ -436,6 +436,42 @@ mod tests {
             .with_handle(handle)
     }
 
+    /// The soundness gate for code-domain pruning: only `root == lit` and OR-trees of those
+    /// (with non-null literals) may prune; range and null-sensitive predicates must not.
+    #[test]
+    fn is_prunable_dict_eq_gate() {
+        use vortex_array::dtype::PType;
+        use vortex_array::expr::get_item;
+        use vortex_array::expr::is_null;
+        use vortex_array::expr::lt;
+        use vortex_array::expr::or;
+        use vortex_array::scalar::Scalar;
+
+        // `root == lit` (either operand order) is prunable.
+        assert!(super::is_prunable_dict_eq(&eq(root(), lit(1i32))));
+        assert!(super::is_prunable_dict_eq(&eq(lit(1i32), root())));
+        // An OR-tree of root-equalities (the IN-list shape) is prunable.
+        assert!(super::is_prunable_dict_eq(&or(
+            eq(root(), lit(1i32)),
+            or(eq(root(), lit(2i32)), eq(root(), lit(3i32))),
+        )));
+
+        // IS NULL must never drive a skip (min/max ignore nulls).
+        assert!(!super::is_prunable_dict_eq(&is_null(root())));
+        // Range predicates: dict codes are storage- not value-ordered.
+        assert!(!super::is_prunable_dict_eq(&lt(root(), lit(1i32))));
+        // Equality whose column side isn't the dict root (un-peeled `get_item`).
+        assert!(!super::is_prunable_dict_eq(&eq(get_item("a", root()), lit(1i32))));
+        // A null literal is excluded.
+        let null_lit = lit(Scalar::null(DType::Primitive(PType::I32, Nullability::Nullable)));
+        assert!(!super::is_prunable_dict_eq(&eq(root(), null_lit)));
+        // An OR with a non-equality branch is not (wholly) prunable.
+        assert!(!super::is_prunable_dict_eq(&or(
+            eq(root(), lit(1i32)),
+            lt(root(), lit(2i32))
+        )));
+    }
+
     #[test]
     fn reading_nested_packs_works() {
         block_on(|handle| async move {
