@@ -233,7 +233,12 @@ impl LayoutReader for DictReader {
             let satisfied = bool_over_values.execute::<Mask>(&mut ctx)?;
 
             let code_indices: Vec<usize> = match satisfied.indices() {
-                AllOr::All => (0..satisfied.len()).collect(),
+                // Every dictionary entry matches: the code-domain rewrite would be a
+                // tautology over the codes (`code == 0 OR code == 1 OR ...` for every
+                // code), so delegating to the codes child prunes nothing by
+                // construction. Skip the per-code OR rewrite — which is O(dict) terms —
+                // and leave the mask untouched.
+                AllOr::All => return Ok(mask),
                 AllOr::None => Vec::new(),
                 AllOr::Some(idxs) => idxs.to_vec(),
             };
@@ -270,23 +275,50 @@ impl LayoutReader for DictReader {
         // TODO(joe): fix up expr partitioning with fallible & null sensitive annotations
         let values_eval = self.values_eval(expr.clone());
 
-        // We register interest on the entire codes row_range for now, there
-        // is no straightforward shift into the codes domain we can do to the expression
-        // without reading values.
-        let codes_eval = self.codes.projection_evaluation(
-            row_range,
-            &root(),
-            MaskFuture::new_true(mask.len()),
-        )?;
-
+        let codes = Arc::clone(&self.codes);
+        let row_range = row_range.clone();
+        // The writer emits non-nullable codes (row nulls become a null *values* entry),
+        // but a nullable codes child would let `take` introduce nulls the all-match
+        // short-circuit below cannot see — so gate it on the invariant holding.
+        let codes_non_nullable = !self.codes.dtype().is_nullable();
         let session = self.session.clone();
+        let mask_len = mask.len();
 
-        Ok(MaskFuture::new(mask.len(), async move {
-            // Join on the I/O futures first, before the mask.
-            let (codes, values) = try_join!(codes_eval, values_eval.map_err(VortexError::from))?;
-            let mask = mask.await?;
-
+        Ok(MaskFuture::new(mask_len, async move {
+            let values = values_eval.map_err(VortexError::from).await?;
             let mut ctx = session.create_execution_ctx();
+
+            // Evaluate the predicate over the (small, cached) dictionary values first.
+            // Each row's result is its dictionary entry's result, so when the entries are
+            // all-true or all-false the per-row outcome is independent of the codes and we
+            // can skip projecting the codes for this row range entirely. `execute::<Mask>`
+            // folds null entries to false — matching what `take` + mask execution would
+            // produce per row — so a dictionary holding a null entry never short-circuits
+            // through the all-match arm.
+            let satisfied = values.clone().execute::<Mask>(&mut ctx)?;
+            match satisfied.indices() {
+                AllOr::All if codes_non_nullable => {
+                    // Tautology over this dictionary: every row satisfies the predicate,
+                    // so the result is exactly the input mask.
+                    return mask.await;
+                }
+                AllOr::None => {
+                    // No dictionary entry satisfies the predicate, so no row can.
+                    return Ok(Mask::new_false(mask_len));
+                }
+                _ => {}
+            }
+
+            // Mixed result: project the row range's codes and map them through the
+            // values-domain evaluation. Constructed lazily — only on this branch — so the
+            // short-circuit arms above never register interest in the codes segments.
+            // We register interest on the entire codes row_range for now, there
+            // is no straightforward shift into the codes domain we can do to the
+            // expression without reading values.
+            let codes_eval =
+                codes.projection_evaluation(&row_range, &root(), MaskFuture::new_true(mask_len))?;
+            let (codes, mask) = try_join!(codes_eval, mask)?;
+
             let dict_mask = values.take(codes)?.execute::<Mask>(&mut ctx)?;
 
             Ok(mask.bitand(&dict_mask))
@@ -618,6 +650,145 @@ mod tests {
                 .unwrap();
 
             assert_arrays_eq!(mask.into_array(), BoolArray::from_iter(expected));
+        })
+    }
+
+    /// A [`SegmentSource`] wrapper that counts how many segment requests pass through it,
+    /// so tests can assert the dict filter short-circuits skip the codes segments.
+    struct CountingSegments {
+        inner: Arc<TestSegments>,
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::segments::SegmentSource for CountingSegments {
+        fn request(&self, id: crate::segments::SegmentId) -> crate::segments::SegmentFuture {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.request(id)
+        }
+    }
+
+    /// When the predicate matches every dictionary entry (a tautology over this chunk, e.g.
+    /// `fleet = 'East'` on a column whose only value is `East`), `filter_evaluation` must
+    /// return the input mask unchanged without reading any codes segments. The symmetric
+    /// no-entry-matches case must return all-false, also without reading codes.
+    #[test]
+    fn filter_tautology_short_circuit_skips_codes() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        use vortex_array::expr::or;
+        use vortex_mask::Mask;
+
+        block_on(|handle| async move {
+            let session = session_with_handle(handle);
+            let strategy = DictStrategy::new(
+                FlatLayoutStrategy::default(),
+                FlatLayoutStrategy::default(),
+                FlatLayoutStrategy::default(),
+                DictLayoutOptions::default(),
+            );
+
+            // Nullable dtype (mirroring a tag column) but no actual nulls, so the
+            // dictionary holds no null entry and the all-match fast path may fire.
+            let array = VarBinArray::from_iter(
+                [Some("a"), Some("b"), Some("a"), Some("b"), Some("a")],
+                DType::Utf8(Nullability::Nullable),
+            )
+            .into_array();
+            let ctx = ArrayContext::empty();
+            let segments = Arc::new(TestSegments::default());
+            let (ptr, eof) = SequenceId::root().split();
+            let layout: LayoutRef = strategy
+                .write_stream(
+                    ctx,
+                    Arc::<TestSegments>::clone(&segments),
+                    SequentialStreamAdapter::new(
+                        DType::Utf8(Nullability::Nullable),
+                        array.to_array_stream().sequenced(ptr),
+                    )
+                    .sendable(),
+                    eof,
+                    &session,
+                )
+                .await
+                .unwrap();
+            assert_eq!(layout.encoding_id(), LayoutId::new("vortex.dict"));
+
+            let utf8_lit = |s: &str| {
+                lit(vortex_array::scalar::Scalar::utf8(
+                    s,
+                    Nullability::Nullable,
+                ))
+            };
+            let counting_reader = |requests: &Arc<AtomicUsize>| {
+                layout
+                    .new_reader(
+                        "".into(),
+                        Arc::new(CountingSegments {
+                            inner: Arc::<TestSegments>::clone(&segments),
+                            requests: Arc::clone(requests),
+                        }),
+                        &session,
+                    )
+                    .unwrap()
+            };
+            // A non-trivial input mask, to check it round-trips through the fast path.
+            let input_mask = Mask::from_indices(5, [0usize, 2, 4]);
+
+            // Tautology: `root = 'a' OR root = 'b'` matches both dictionary entries.
+            let taut_requests = Arc::new(AtomicUsize::new(0));
+            let taut_result = counting_reader(&taut_requests)
+                .filter_evaluation(
+                    &(0..5),
+                    &or(eq(root(), utf8_lit("a")), eq(root(), utf8_lit("b"))),
+                    MaskFuture::ready(input_mask.clone()),
+                )
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(taut_result, input_mask);
+
+            // No-match: `root = 'zzz'` matches no dictionary entry.
+            let none_requests = Arc::new(AtomicUsize::new(0));
+            let none_result = counting_reader(&none_requests)
+                .filter_evaluation(
+                    &(0..5),
+                    &eq(root(), utf8_lit("zzz")),
+                    MaskFuture::ready(input_mask.clone()),
+                )
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(none_result, Mask::new_false(5));
+
+            // Mixed: `root = 'a'` matches one of two entries — must read codes.
+            let mixed_requests = Arc::new(AtomicUsize::new(0));
+            let mixed_result = counting_reader(&mixed_requests)
+                .filter_evaluation(
+                    &(0..5),
+                    &eq(root(), utf8_lit("a")),
+                    MaskFuture::ready(input_mask.clone()),
+                )
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(mixed_result, Mask::from_indices(5, [0usize, 2, 4]));
+
+            // Both short-circuit paths must touch strictly fewer segments than the
+            // codes-reading path; against the same layout the difference is exactly
+            // the codes segments.
+            let taut = taut_requests.load(Ordering::Relaxed);
+            let none = none_requests.load(Ordering::Relaxed);
+            let mixed = mixed_requests.load(Ordering::Relaxed);
+            assert!(
+                taut < mixed,
+                "tautology filter must skip codes segments ({taut} vs {mixed} requests)"
+            );
+            assert!(
+                none < mixed,
+                "no-match filter must skip codes segments ({none} vs {mixed} requests)"
+            );
         })
     }
 
